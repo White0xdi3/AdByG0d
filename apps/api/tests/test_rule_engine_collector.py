@@ -3,8 +3,8 @@ from __future__ import annotations
 import json
 import zipfile
 from io import BytesIO
-from pathlib import Path
 
+import pytest
 from sqlalchemy import select
 
 from adbygod_api.core.analyzers.rule_engine import RuleEngine
@@ -75,6 +75,15 @@ def _rule_data_from_payload(payload: dict):
 
 def _new_rule_count(rule_data: dict) -> int:
     return sum(1 for match in RuleEngine().evaluate_all(rule_data) if match.rule_id in NEW_RULE_IDS)
+
+
+@pytest.fixture()
+def generated_coverage_pack_dir(tmp_path):
+    from scripts.generate_coverage_expansion_packs import write_coverage_expansion_packs
+
+    pack_dir = tmp_path / "coverage_expansion"
+    write_coverage_expansion_packs(pack_dir)
+    return pack_dir
 
 
 def test_new_edge_types_are_schema_values():
@@ -373,9 +382,8 @@ def test_native_collector_canonical_overlay_is_gated():
     assert "ACL-010" not in _rule_ids(rule_data)
 
 
-def test_generated_coverage_expansion_packs_match_expected_counts():
-    root = Path(__file__).resolve().parents[3]
-    pack_dir = root / "data" / "samples" / "coverage_expansion"
+def test_generated_coverage_expansion_packs_match_expected_counts(generated_coverage_pack_dir):
+    pack_dir = generated_coverage_pack_dir
     expected = json.loads((pack_dir / "expected_findings.json").read_text())
 
     canonical = json.loads((pack_dir / "canonical_coverage_pack_fixture.json").read_text())
@@ -396,9 +404,8 @@ def test_generated_coverage_expansion_packs_match_expected_counts():
     assert _new_rule_count(_rule_data_from_payload(nightmare)) == expected["nightmare"]["total_new_rule_findings"]
 
 
-def test_generated_canonical_pack_ingests_with_evidence_and_report(test_app):
-    root = Path(__file__).resolve().parents[3]
-    pack_dir = root / "data" / "samples" / "coverage_expansion"
+def test_generated_canonical_pack_ingests_with_evidence_and_report(test_app, generated_coverage_pack_dir):
+    pack_dir = generated_coverage_pack_dir
     expected = json.loads((pack_dir / "expected_findings.json").read_text())
     canonical = json.loads((pack_dir / "canonical_coverage_pack_fixture.json").read_text())
 

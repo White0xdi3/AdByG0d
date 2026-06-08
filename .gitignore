@@ -81,6 +81,8 @@ apps/api/headers/
 apps/api/html/
 apps/api/screenshots/
 reports/
+!apps/api/src/adbygod_api/core/reports/
+!apps/api/src/adbygod_api/core/reports/*.py
 apps/api/reports/
 uploads/
 apps/api/uploads/

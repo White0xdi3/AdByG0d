@@ -260,10 +260,10 @@ def write_json(path: Path, data: dict):
     path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
 
 
-def main():
-    OUT.mkdir(parents=True, exist_ok=True)
+def write_coverage_expansion_packs(out: Path = OUT) -> dict:
+    out.mkdir(parents=True, exist_ok=True)
     canonical = canonical_payload()
-    write_json(OUT / "canonical_coverage_pack_fixture.json", canonical)
+    write_json(out / "canonical_coverage_pack_fixture.json", canonical)
 
     native_manifest = {
         "generator": "AdByGod-Native-Collector",
@@ -273,7 +273,7 @@ def main():
         "collector_version": "coverage-expansion/1.0",
         "modules": ["coverage_expansion"],
     }
-    with zipfile.ZipFile(OUT / "native_collector_coverage_pack_fixture.zip", "w", zipfile.ZIP_DEFLATED) as zf:
+    with zipfile.ZipFile(out / "native_collector_coverage_pack_fixture.zip", "w", zipfile.ZIP_DEFLATED) as zf:
         zf.writestr("manifest.json", json.dumps(native_manifest, indent=2))
         zf.writestr("coverage_expansion.json", json.dumps({
             "commands": [],
@@ -282,7 +282,7 @@ def main():
         }, indent=2))
 
     bh = bloodhound_bundle()
-    with zipfile.ZipFile(OUT / "bloodhound_coverage_pack_fixture.zip", "w", zipfile.ZIP_DEFLATED) as zf:
+    with zipfile.ZipFile(out / "bloodhound_coverage_pack_fixture.zip", "w", zipfile.ZIP_DEFLATED) as zf:
         for name, payload in bh.items():
             zf.writestr(name, json.dumps(payload, indent=2))
 
@@ -291,11 +291,11 @@ def main():
         {"ObjectIdentifier": f"S-1-5-21-100-8{idx:04d}", "Properties": {"name": f"DECOY{idx:04d}.COVERAGE.LOCAL", "samaccountname": f"DECOY{idx:04d}$", "operatingsystem": "Windows 11"}}
         for idx in range(500)
     )
-    with zipfile.ZipFile(OUT / "bloodhound_coverage_nightmare_fixture.zip", "w", zipfile.ZIP_DEFLATED) as zf:
+    with zipfile.ZipFile(out / "bloodhound_coverage_nightmare_fixture.zip", "w", zipfile.ZIP_DEFLATED) as zf:
         for name, payload in nightmare.items():
             zf.writestr(name, json.dumps(payload))
 
-    parsed_bh = BloodHoundParser().parse_zip((OUT / "bloodhound_coverage_pack_fixture.zip").read_bytes())
+    parsed_bh = BloodHoundParser().parse_zip((out / "bloodhound_coverage_pack_fixture.zip").read_bytes())
     bh_canonical = {
         **canonical,
         "entities": parsed_bh["entities"],
@@ -317,8 +317,8 @@ def main():
         "bloodhound": rule_counts_for(bh_canonical),
         "nightmare": {"decoy_computers": 500, **rule_counts_for(bh_canonical)},
     }
-    write_json(OUT / "expected_findings.json", expected)
-    write_json(OUT / "rule_matrix.json", {
+    write_json(out / "expected_findings.json", expected)
+    write_json(out / "rule_matrix.json", {
         "supported_paths": {
             "canonical": sorted(NEW_RULE_IDS),
             "native_collector": sorted(NEW_RULE_IDS),
@@ -331,7 +331,7 @@ def main():
             "ESC15": "Graph attack-flow reference exists; no central finding added without known template/application policy telemetry contract.",
         },
     })
-    write_json(OUT / "decoy_manifest.json", {
+    write_json(out / "decoy_manifest.json", {
         "decoys": [
             "SAFE-PrivilegedOnly-NoSecurityExtension has privileged-only enrollment and must not trigger ESC9.",
             "SAFE-CA has strong mapping/encrypted RPC and must not trigger ESC10/ESC11/ESC16.",
@@ -346,7 +346,7 @@ def main():
             "NIGHTMARE DECOY hosts are Windows 11 and should not increase legacy OS findings.",
         ]
     })
-    (OUT / "README.md").write_text(
+    (out / "README.md").write_text(
         "# Coverage Expansion Synthetic Packs\n\n"
         "Import the `*_fixture.*` files through the product import UI or API.\n\n"
         "`expected_findings.json` contains exact expected new-rule finding row counts by import path. "
@@ -354,6 +354,11 @@ def main():
         "Decoys are listed in `decoy_manifest.json` and should not create additional findings.\n",
         encoding="utf-8",
     )
+    return expected
+
+
+def main():
+    expected = write_coverage_expansion_packs(OUT)
     print(f"Wrote coverage expansion packs to {OUT}")
     print(json.dumps(expected, indent=2, sort_keys=True))
 
