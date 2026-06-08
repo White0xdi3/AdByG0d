@@ -2,7 +2,7 @@
 # Build context must be the repo root (monorepo workspace)
 
 # --- builder: install all deps and build Next.js ---
-FROM node:20-alpine AS builder
+FROM node:26-alpine AS builder
 WORKDIR /workspace
 
 COPY package.json package-lock.json ./
@@ -21,7 +21,7 @@ WORKDIR /workspace/apps/web
 RUN npm run build
 
 # --- runner: minimal production image ---
-FROM node:20-alpine AS runner
+FROM node:26-alpine AS runner
 WORKDIR /workspace
 
 ENV NODE_ENV=production
