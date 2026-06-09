@@ -6,6 +6,7 @@ FROM node:20-alpine AS builder
 WORKDIR /workspace
 
 COPY package.json package-lock.json ./
+COPY apps/web/package.json ./apps/web/
 RUN npm ci
 
 COPY apps/web/ ./apps/web/
