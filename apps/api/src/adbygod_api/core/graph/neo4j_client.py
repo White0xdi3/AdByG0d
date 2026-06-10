@@ -17,7 +17,13 @@ log = logging.getLogger(__name__)
 
 _driver: AsyncDriver | None = None
 # Serialises connect() so concurrent callers can't create two drivers and leak
-# a connection pool. Safe to construct at import time on Python >= 3.10.
+# a connection pool. connect() is only ever called from a single coroutine
+# (app lifespan startup, or one-task-at-a-time prefork Celery), so this lock is
+# never *contended* — and asyncio.Lock only binds to a loop on the contended
+# acquire path, so it never binds and is safe to reuse across the fresh event
+# loops that asyncio.run creates per Celery task. (Do not swap for a
+# threading.Lock: it is held across the verify_connectivity() await and a
+# threading.Lock across an await can deadlock the event loop.)
 _connect_lock: asyncio.Lock = asyncio.Lock()
 
 # Constraints/indexes are idempotent (IF NOT EXISTS). Applied on startup.

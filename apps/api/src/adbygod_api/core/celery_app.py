@@ -50,6 +50,7 @@ def _make_celery() -> Celery:
             # Discover tasks from the tasks package.
             "imports": [
                 "adbygod_api.core.tasks.offensive_jobs",
+                "adbygod_api.core.tasks.graph_projection",
                 "adbygod_api.core.recon.recon_engine",
             ],
         }
