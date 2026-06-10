@@ -46,29 +46,28 @@ class Neo4jGraphService:
         return await self._lookup("object_sid", sid)
 
     # -------------------------------------------------------------- path finding
-    def _path_to_attack(self, nodes, rels) -> AttackPath:
-        """Map a Cypher path (ordered nodes + relationships) to an AttackPath."""
-        node_dicts = [dict(n) for n in nodes]
-        rel_dicts = [{"type": r.type, **dict(r)} for r in rels]
-        return build_attack_path(node_dicts, rel_dicts)
-
     async def find_shortest_path(
         self, source_id: str, target_id: str, max_hops: int = 12,
     ) -> Optional[AttackPath]:
         # max_hops is an int we control; inline it (variable-length bounds cannot
         # be parameters in Cypher). The all(...) predicate keeps the search inside
         # this assessment (defence-in-depth — projection never bridges assessments).
+        # We only take the node *sequence* from shortestPath; _attack_path_from_ids
+        # then rebuilds with the highest-risk edge per pair, matching the analyzer
+        # (which collapses parallel edges to max risk_weight for scoring).
         cypher = (
             "MATCH (s:Entity {id:$s, assessment_id:$aid}), "
             "(t:Entity {id:$t, assessment_id:$aid}) "
             f"MATCH p = shortestPath((s)-[rels*..{int(max_hops)}]->(t)) "
             "WHERE all(r IN rels WHERE r.assessment_id = $aid) "
-            "RETURN nodes(p) AS ns, relationships(p) AS rs"
+            "RETURN [n IN nodes(p) | n.id] AS ids"
         )
         async with self._session() as ses:
             result = await ses.run(cypher, s=source_id, t=target_id, aid=self.aid)
             rec = await result.single()
-            return self._path_to_attack(rec["ns"], rec["rs"]) if rec else None
+        if not rec:
+            return None
+        return await self._attack_path_from_ids(rec["ids"])
 
     async def find_all_shortest_paths(
         self, source_id: str, target_id: str, max_hops: int = 12, limit: int = 10,
@@ -78,15 +77,18 @@ class Neo4jGraphService:
             "(t:Entity {id:$t, assessment_id:$aid}) "
             f"MATCH p = allShortestPaths((s)-[rels*..{int(max_hops)}]->(t)) "
             "WHERE all(r IN rels WHERE r.assessment_id = $aid) "
-            "RETURN nodes(p) AS ns, relationships(p) AS rs LIMIT $lim"
+            "RETURN [n IN nodes(p) | n.id] AS ids LIMIT $lim"
         )
-        out: list[AttackPath] = []
         async with self._session() as ses:
             result = await ses.run(
                 cypher, s=source_id, t=target_id, aid=self.aid, lim=int(limit),
             )
-            async for rec in result:
-                out.append(self._path_to_attack(rec["ns"], rec["rs"]))
+            id_lists = [rec["ids"] async for rec in result]
+        out: list[AttackPath] = []
+        for ids in id_lists:
+            ap = await self._attack_path_from_ids(ids)
+            if ap is not None:
+                out.append(ap)
         return out
 
     async def find_k_shortest_paths(
@@ -98,7 +100,13 @@ class Neo4jGraphService:
         the highest-risk one (done in _attack_path_from_ids) and weight by
         ``1 - risk_weight`` so Yen's prefers high-risk routes.
         """
+        k = int(k)
         gname = "ksp_" + uuid.uuid4().hex
+        # Oversample: Yen's returns paths in ascending-weight order, but we drop
+        # any exceeding max_hops afterwards. Requesting more than k lets us backfill
+        # in weight order (matching the analyzer, which lazily skips too-long paths
+        # and keeps going until it has k). Capped to bound cost on large graphs.
+        gds_k = min(max(k * 2, k + 5), 64)
         project = (
             "MATCH (s:Entity {assessment_id:$aid})-[r {assessment_id:$aid}]->"
             "(t:Entity {assessment_id:$aid}) "
@@ -110,15 +118,15 @@ class Neo4jGraphService:
             "(t:Entity {id:$t, assessment_id:$aid}) "
             "CALL gds.shortestPath.yens.stream($g, "
             "{sourceNode: s, targetNode: t, k: $k, relationshipWeightProperty: 'w'}) "
-            "YIELD nodeIds "
-            "RETURN [n IN nodeIds | gds.util.asNode(n).id] AS ids"
+            "YIELD index, nodeIds "
+            "RETURN [n IN nodeIds | gds.util.asNode(n).id] AS ids ORDER BY index"
         )
         id_lists: list[list[str]] = []
         async with self._session() as ses:
             try:
                 await (await ses.run(project, g=gname, aid=self.aid)).consume()
                 result = await ses.run(
-                    yens, g=gname, s=source_id, t=target_id, k=int(k), aid=self.aid,
+                    yens, g=gname, s=source_id, t=target_id, k=gds_k, aid=self.aid,
                 )
                 async for rec in result:
                     id_lists.append(rec["ids"])
@@ -126,15 +134,19 @@ class Neo4jGraphService:
                 # Always release the ephemeral in-memory projection.
                 await ses.run("CALL gds.graph.drop($g, false)", g=gname)
 
-        paths: list[AttackPath] = []
+        # Select the first k paths within max_hops in Yen's (weight) order, then
+        # sort those by path_score for display — exactly the analyzer's contract.
+        selected: list[AttackPath] = []
         for ids in id_lists:
             if len(ids) - 1 > int(max_hops):
                 continue
             ap = await self._attack_path_from_ids(ids)
             if ap is not None:
-                paths.append(ap)
-        paths.sort(key=lambda p: p.path_score, reverse=True)
-        return paths[: int(k)]
+                selected.append(ap)
+            if len(selected) >= k:
+                break
+        selected.sort(key=lambda p: p.path_score, reverse=True)
+        return selected
 
     async def _attack_path_from_ids(self, ids: list[str]) -> Optional[AttackPath]:
         """Rebuild an AttackPath from an ordered list of node ids (used by GDS).
@@ -164,4 +176,6 @@ class Neo4jGraphService:
             rels = [rec["r"] async for rec in rres]
         if len(nodes) != len(ids) or len(rels) != len(ids) - 1:
             return None
-        return self._path_to_attack(nodes, rels)
+        node_dicts = [dict(n) for n in nodes]
+        rel_dicts = [{"type": r.type, **dict(r)} for r in rels]
+        return build_attack_path(node_dicts, rel_dicts)

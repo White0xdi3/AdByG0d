@@ -16,6 +16,8 @@ from adbygod_api.core.graph.graph_service import (  # dataclasses + pure helpers
     PathStep,
     EDGE_RISK,
     CREDENTIAL_EDGES,
+    HVT_TYPES,
+    HVT_SAM_PATTERNS,
     _safe_float,
     _explain_edge,
     _build_explanation,
@@ -47,6 +49,35 @@ def _label_of(node: dict[str, Any]) -> str:
     )
 
 
+def _is_tier0(node: dict[str, Any]) -> bool:
+    """Per-node Tier-0 membership, mirroring ADGraphAnalyzer._build_tier0_index.
+
+    The analyzer's ``_tier0`` set is derived purely from node attributes (no
+    transitive group membership), so it can be reproduced from projected props:
+    explicit tier 0, crown jewel, a high-value entity type, or a SAM name that
+    contains a high-value pattern (e.g. "domain admins", "krbtgt").
+    """
+    if node.get("tier") == 0 or node.get("is_crown_jewel"):
+        return True
+    if node.get("entity_type", "") in HVT_TYPES:
+        return True
+    sam = (node.get("sam_account_name") or "").lower()
+    return any(pattern in sam for pattern in HVT_SAM_PATTERNS)
+
+
+def _effective_tier(node: dict[str, Any]) -> Any:
+    """Tier reported on a PathStep, mirroring the analyzer's back-propagation.
+
+    ``_build_tier0_index`` sets ``tier = 0`` in entity_meta for Tier-0 nodes
+    whose original tier was ``None`` (leaving any explicit tier untouched). The
+    projected node carries the raw Postgres tier, so we apply the same rule here.
+    """
+    tier = node.get("tier")
+    if tier is None and _is_tier0(node):
+        return 0
+    return tier
+
+
 def build_attack_path(nodes: list[dict[str, Any]], rels: list[dict[str, Any]]) -> AttackPath:
     """Build an AttackPath from an ordered Cypher path.
 
@@ -72,6 +103,13 @@ def build_attack_path(nodes: list[dict[str, Any]], rels: list[dict[str, Any]]) -
             node_ids=[n["id"] for n in nodes], edge_types=[],
         )
 
+    # Callers must supply exactly one relationship per hop; fail loud on misuse
+    # rather than IndexError deep in the loop below.
+    if len(rels) != len(nodes) - 1:
+        raise ValueError(
+            f"build_attack_path: expected {len(nodes) - 1} rels, got {len(rels)}"
+        )
+
     steps: list[PathStep] = []
     edge_types: list[str] = []
     involves_cred = involves_deleg = involves_adcs = crosses_trust = False
@@ -81,7 +119,7 @@ def build_attack_path(nodes: list[dict[str, Any]], rels: list[dict[str, Any]]) -
         step = PathStep(
             node_id=n["id"], node_label=label,
             node_type=n.get("entity_type", "UNKNOWN"),
-            tier=n.get("tier"), is_crown_jewel=bool(n.get("is_crown_jewel")),
+            tier=_effective_tier(n), is_crown_jewel=bool(n.get("is_crown_jewel")),
         )
         if i < len(nodes) - 1:
             r = rels[i]
@@ -110,7 +148,7 @@ def build_attack_path(nodes: list[dict[str, Any]], rels: list[dict[str, Any]]) -
     confidence = min(edge_confidences) if edge_confidences else 1.0
 
     hop_count = len(nodes) - 1
-    tier0_proximity = 1.0 if any(n.get("tier") == 0 for n in nodes[1:]) else 0.5
+    tier0_proximity = 1.0 if any(_is_tier0(n) for n in nodes[1:]) else 0.5
     raw_score = (
         avg_risk * 0.40
         + (1.0 / max(hop_count, 1)) * 0.20
