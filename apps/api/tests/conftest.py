@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+pytest_plugins = ["tests.neo4j_fixtures"]
+
 import asyncio
 import sys
 from pathlib import Path
