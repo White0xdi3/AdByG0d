@@ -6,8 +6,17 @@ from typing import Any, Optional
 
 from adbygod_api.config import settings
 from adbygod_api.core.graph import neo4j_client
-from adbygod_api.core.graph.cypher_mappers import build_attack_path
-from adbygod_api.core.graph.graph_service import AttackPath
+from adbygod_api.core.graph.cypher_mappers import (
+    build_attack_path,
+    _effective_tier,
+    _is_tier0,
+    _label_of,
+)
+from adbygod_api.core.graph.graph_service import (
+    AttackPath,
+    CONTROL_EDGES,
+    CREDENTIAL_EDGES,
+)
 
 
 class Neo4jGraphService:
@@ -179,3 +188,161 @@ class Neo4jGraphService:
         node_dicts = [dict(n) for n in nodes]
         rel_dicts = [{"type": r.type, **dict(r)} for r in rels]
         return build_attack_path(node_dicts, rel_dicts)
+
+    # ------------------------------------------------------ reachability / views
+    async def get_reachable_from(self, source_id: str) -> set[str]:
+        """All nodes reachable from source (descendants), mirroring nx.descendants.
+
+        Uses APOC subgraph traversal (visited-tracked BFS) rather than an unbounded
+        ``-[*]->`` so it stays efficient on large graphs.
+        """
+        return await self._reachable(source_id, ">")
+
+    async def get_can_reach(self, target_id: str) -> set[str]:
+        """All nodes that can reach target (ancestors), mirroring nx.ancestors."""
+        return await self._reachable(target_id, "<")
+
+    async def _reachable(self, node_id: str, direction: str) -> set[str]:
+        cypher = (
+            "MATCH (start:Entity {id:$id, assessment_id:$aid}) "
+            "CALL apoc.path.subgraphNodes(start, "
+            "{relationshipFilter:$rf, labelFilter:'+Entity', maxLevel:-1}) YIELD node "
+            "WHERE node.assessment_id = $aid AND node.id <> $id "
+            "RETURN node.id AS id"
+        )
+        async with self._session() as ses:
+            result = await ses.run(cypher, id=node_id, aid=self.aid, rf=direction)
+            return {rec["id"] async for rec in result}
+
+    async def get_neighborhood(
+        self, node_id: str, hops: int = 2, max_nodes: int = 200,
+    ) -> dict[str, Any]:
+        """N-hop subgraph around node_id (both directions), matching the shape
+        ADGraphAnalyzer.get_neighborhood returns to the frontend."""
+        center_cypher = (
+            "MATCH (c:Entity {id:$id, assessment_id:$aid}) "
+            "CALL apoc.path.subgraphNodes(c, "
+            "{relationshipFilter:'', labelFilter:'+Entity', maxLevel:$hops, limit:$max}) "
+            "YIELD node WHERE node.assessment_id = $aid RETURN node"
+        )
+        async with self._session() as ses:
+            nres = await ses.run(
+                center_cypher, id=node_id, aid=self.aid,
+                hops=int(hops), max=int(max_nodes),
+            )
+            raw_nodes = [dict(rec["node"]) async for rec in nres]
+            if not raw_nodes:
+                return {"nodes": [], "edges": []}
+            ids = [n["id"] for n in raw_nodes]
+            erows = await ses.run(
+                "MATCH (s:Entity {assessment_id:$aid})-[r {assessment_id:$aid}]->"
+                "(t:Entity {assessment_id:$aid}) "
+                "WHERE s.id IN $ids AND t.id IN $ids "
+                "RETURN r.id AS id, s.id AS s, t.id AS t, type(r) AS et, "
+                "r.risk_weight AS rw, r.edge_confidence AS ec, "
+                "r.edge_provenance_type AS ept",
+                aid=self.aid, ids=ids,
+            )
+            edges = [
+                {
+                    "id": rec["id"], "source": rec["s"], "target": rec["t"],
+                    "edge_type": rec["et"],
+                    "risk_weight": rec["rw"] if rec["rw"] is not None else 0.5,
+                    "edge_confidence": rec["ec"] if rec["ec"] is not None else 1.0,
+                    "edge_provenance_type": rec["ept"] or "collected",
+                }
+                async for rec in erows
+            ]
+        nodes = [
+            {
+                "id": n["id"], "label": _label_of(n),
+                "entity_type": n.get("entity_type", "UNKNOWN"),
+                "tier": _effective_tier(n),
+                "is_crown_jewel": bool(n.get("is_crown_jewel")),
+                "is_admin_count": bool(n.get("is_admin_count")),
+                "community_id": n.get("community_id"),  # set by Louvain (Phase 3)
+            }
+            for n in raw_nodes
+        ]
+        return {"nodes": nodes, "edges": edges}
+
+    def _node_view(self, n: dict[str, Any]) -> dict[str, Any]:
+        """Full frontend node shape (matches the golden export_for_frontend).
+
+        ``betweenness`` (GDS centrality), ``tier0_reach`` (blast radius),
+        ``severity_count`` (findings) and the non-default ``attributes`` fields
+        are Phase-3 analytics not yet projected; they are emitted with safe
+        defaults so the frontend contract holds.
+        """
+        return {
+            "id": n["id"], "label": _label_of(n),
+            "entity_type": n.get("entity_type", "UNKNOWN"),
+            "tier": _effective_tier(n),
+            "is_crown_jewel": bool(n.get("is_crown_jewel")),
+            "is_admin_count": bool(n.get("is_admin_count")),
+            "is_tier0": _is_tier0(n),
+            "is_enabled": bool(n.get("is_enabled", True)),
+            "domain": n.get("domain"),
+            "tier0_reach": 0,        # Phase 3: blast radius
+            "betweenness": 0.0,      # Phase 3: GDS centrality
+            "attributes": {
+                "has_spn": bool(n.get("has_spn")),
+                "laps_enabled": bool(n.get("laps_enabled")),
+                "uac_dont_req_preauth": bool(n.get("uac_dont_req_preauth")),
+                "uac_trusted_for_deleg": bool(n.get("uac_trusted_for_deleg")),
+                "uac_trusted_to_auth_deleg": bool(n.get("uac_trusted_to_auth_deleg")),
+            },
+            "severity_count": {},    # Phase 3: finding projection
+        }
+
+    async def export_for_frontend(
+        self, max_nodes: int = 500, filter_types: Optional[list[str]] = None,
+    ) -> dict[str, Any]:
+        """Frontend graph payload: full node/edge shape matching the golden file.
+
+        Node selection here is a simplified, deterministic priority (Tier-0, then
+        crown jewels, then label) capped at max_nodes; the analyzer's blast/
+        centrality-weighted budgeting is deferred with those Phase-3 metrics.
+        """
+        node_cypher = (
+            "MATCH (n:Entity {assessment_id:$aid}) "
+            + ("WHERE n.entity_type IN $ftypes " if filter_types else "")
+            + "RETURN n ORDER BY "
+            "(CASE WHEN n.tier = 0 OR n.is_crown_jewel THEN 0 ELSE 1 END), "
+            "coalesce(n.sam_account_name, n.display_name, n.id) "
+            "LIMIT $max"
+        )
+        async with self._session() as ses:
+            nres = await ses.run(
+                node_cypher, aid=self.aid,
+                ftypes=filter_types or [], max=int(max_nodes),
+            )
+            raw_nodes = [dict(rec["n"]) async for rec in nres]
+            ids = [n["id"] for n in raw_nodes]
+            erows = await ses.run(
+                "MATCH (s:Entity {assessment_id:$aid})-[r {assessment_id:$aid}]->"
+                "(t:Entity {assessment_id:$aid}) "
+                "WHERE s.id IN $ids AND t.id IN $ids "
+                "RETURN r.id AS id, s.id AS s, t.id AS t, type(r) AS et, "
+                "r.risk_weight AS rw, r.edge_confidence AS ec, "
+                "r.edge_provenance_type AS ept, r.provenance AS prov",
+                aid=self.aid, ids=ids,
+            )
+            edges = [
+                {
+                    "id": rec["id"], "source": rec["s"], "target": rec["t"],
+                    "edge_type": rec["et"],
+                    "risk_weight": round(float(rec["rw"] if rec["rw"] is not None else 0.5), 3),
+                    "edge_confidence": rec["ec"] if rec["ec"] is not None else 1.0,
+                    "edge_provenance_type": rec["ept"] or "collected",
+                    "provenance": rec["prov"] or "",
+                    "is_control_edge": rec["et"] in CONTROL_EDGES,
+                    "is_credential_edge": rec["et"] in CREDENTIAL_EDGES,
+                }
+                async for rec in erows
+            ]
+        nodes = [self._node_view(n) for n in raw_nodes]
+        return {
+            "nodes": nodes, "edges": edges,
+            "node_count": len(nodes), "edge_count": len(edges),
+        }
