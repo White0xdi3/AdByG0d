@@ -1,0 +1,95 @@
+{
+  "edge_count": 2,
+  "edges": [
+    {
+      "edge_confidence": 1.0,
+      "edge_provenance_type": "collected",
+      "edge_type": "MEMBER_OF",
+      "id": "e1",
+      "is_control_edge": false,
+      "is_credential_edge": false,
+      "provenance": "",
+      "risk_weight": 0.5,
+      "source": "n-alice",
+      "target": "n-helpdesk"
+    },
+    {
+      "edge_confidence": 1.0,
+      "edge_provenance_type": "collected",
+      "edge_type": "GENERIC_ALL",
+      "id": "e2",
+      "is_control_edge": true,
+      "is_credential_edge": false,
+      "provenance": "",
+      "risk_weight": 1.0,
+      "source": "n-helpdesk",
+      "target": "n-da"
+    }
+  ],
+  "node_count": 3,
+  "nodes": [
+    {
+      "attributes": {
+        "has_spn": false,
+        "laps_enabled": false,
+        "uac_dont_req_preauth": false,
+        "uac_trusted_for_deleg": false,
+        "uac_trusted_to_auth_deleg": false
+      },
+      "betweenness": 0.0,
+      "domain": null,
+      "entity_type": "GROUP",
+      "id": "n-da",
+      "is_admin_count": false,
+      "is_crown_jewel": true,
+      "is_enabled": true,
+      "is_tier0": true,
+      "label": "Domain Admins",
+      "severity_count": {},
+      "tier": 0,
+      "tier0_reach": 0
+    },
+    {
+      "attributes": {
+        "has_spn": false,
+        "laps_enabled": false,
+        "uac_dont_req_preauth": false,
+        "uac_trusted_for_deleg": false,
+        "uac_trusted_to_auth_deleg": false
+      },
+      "betweenness": 0.0,
+      "domain": null,
+      "entity_type": "USER",
+      "id": "n-alice",
+      "is_admin_count": false,
+      "is_crown_jewel": false,
+      "is_enabled": true,
+      "is_tier0": false,
+      "label": "alice",
+      "severity_count": {},
+      "tier": null,
+      "tier0_reach": 1
+    },
+    {
+      "attributes": {
+        "has_spn": false,
+        "laps_enabled": false,
+        "uac_dont_req_preauth": false,
+        "uac_trusted_for_deleg": false,
+        "uac_trusted_to_auth_deleg": false
+      },
+      "betweenness": 0.5,
+      "domain": null,
+      "entity_type": "GROUP",
+      "id": "n-helpdesk",
+      "is_admin_count": false,
+      "is_crown_jewel": false,
+      "is_enabled": true,
+      "is_tier0": false,
+      "label": "helpdesk",
+      "severity_count": {},
+      "tier": null,
+      "tier0_reach": 1
+    }
+  ]
+}

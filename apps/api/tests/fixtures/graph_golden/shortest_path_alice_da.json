@@ -1,0 +1,59 @@
+{
+  "confidence": 1.0,
+  "crosses_trust": false,
+  "edge_types": [
+    "MEMBER_OF",
+    "GENERIC_ALL"
+  ],
+  "explanation": "alice is a member of helpdesk \u2014 inherits group privileges helpdesk has GenericAll over Domain Admins \u2014 full object control Domain Admins",
+  "hop_count": 2,
+  "involves_adcs": false,
+  "involves_credential_access": false,
+  "involves_delegation": false,
+  "node_ids": [
+    "n-alice",
+    "n-helpdesk",
+    "n-da"
+  ],
+  "path_score": 60.0,
+  "risk_level": "MEDIUM",
+  "source_id": "n-alice",
+  "source_label": "alice",
+  "steps": [
+    {
+      "edge_provenance": "",
+      "edge_risk": 0.5,
+      "edge_type": "MEMBER_OF",
+      "explanation": "alice is a member of helpdesk \u2014 inherits group privileges",
+      "is_crown_jewel": false,
+      "node_id": "n-alice",
+      "node_label": "alice",
+      "node_type": "USER",
+      "tier": null
+    },
+    {
+      "edge_provenance": "",
+      "edge_risk": 1.0,
+      "edge_type": "GENERIC_ALL",
+      "explanation": "helpdesk has GenericAll over Domain Admins \u2014 full object control",
+      "is_crown_jewel": false,
+      "node_id": "n-helpdesk",
+      "node_label": "helpdesk",
+      "node_type": "GROUP",
+      "tier": null
+    },
+    {
+      "edge_provenance": null,
+      "edge_risk": 0.0,
+      "edge_type": null,
+      "explanation": "",
+      "is_crown_jewel": true,
+      "node_id": "n-da",
+      "node_label": "Domain Admins",
+      "node_type": "GROUP",
+      "tier": 0
+    }
+  ],
+  "target_id": "n-da",
+  "target_label": "Domain Admins"
+}
